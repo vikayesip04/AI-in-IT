@@ -1,0 +1,572 @@
+"""
+Модуль 3: Сегментація клієнтів (K-Means + RFM)
+Покращена версія з візуалізацією
+"""
+
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score
+import matplotlib.pyplot as plt
+import seaborn as sns
+from mpl_toolkits.mplot3d import Axes3D
+
+# Налаштування стилю графіків
+sns.set_style("whitegrid")
+plt.rcParams['figure.figsize'] = (15, 10)
+plt.rcParams['font.size'] = 10
+
+class CustomerSegmentation:
+    """Клас для сегментації клієнтів"""
+    
+    def __init__(self, n_clusters=4):
+        self.n_clusters = n_clusters
+        self.scaler = StandardScaler()
+        self.kmeans = None
+        self.rfm_data = None
+        self.cluster_descriptions = {}
+        self.inertias = []
+        self.silhouette_scores = []
+        
+    def calculate_rfm(self, transactions_df, current_date=None):
+        """Розрахунок RFM метрик"""
+        print("  Розрахунок RFM метрик...")
+        
+        if current_date is None:
+            current_date = transactions_df['date'].max()
+        
+        rfm = transactions_df.groupby('customer_id').agg({
+            'date': lambda x: (current_date - x.max()).days,  # Recency
+            'customer_id': 'count',  # Frequency
+            'amount': 'sum'  # Monetary
+        })
+        
+        rfm.columns = ['recency', 'frequency', 'monetary']
+        rfm = rfm.reset_index()
+        
+        print(f"  Розраховано RFM для {len(rfm)} клієнтів")
+        
+        return rfm
+    
+    def find_optimal_k(self, rfm_data, max_k=10):
+        """Визначення оптимальної кількості кластерів"""
+        print("\n  Пошук оптимального K (метод ліктя)...")
+        
+        rfm_scaled = self.scaler.fit_transform(rfm_data[['recency', 'frequency', 'monetary']])
+        
+        self.inertias = []
+        self.silhouette_scores = []
+        
+        for k in range(2, max_k + 1):
+            kmeans = KMeans(n_clusters=k, init='k-means++', random_state=42, n_init=10)
+            kmeans.fit(rfm_scaled)
+            
+            self.inertias.append(kmeans.inertia_)
+            sil_score = silhouette_score(rfm_scaled, kmeans.labels_)
+            self.silhouette_scores.append(sil_score)
+            
+            print(f"  K={k}: Inertia={kmeans.inertia_:.2f}, Silhouette={sil_score:.3f}")
+        
+        # Вибір оптимального K (максимальний Silhouette)
+        optimal_k = np.argmax(self.silhouette_scores) + 2
+        print(f"\n  Оптимальне K: {optimal_k} (Silhouette={max(self.silhouette_scores):.3f})")
+        
+        return optimal_k
+    
+    def fit(self, transactions_df):
+        """Навчання моделі сегментації"""
+        print("\n  Навчання моделі сегментації...")
+        
+        # Розрахунок RFM
+        self.rfm_data = self.calculate_rfm(transactions_df)
+        
+        # Нормалізація
+        self.rfm_scaled = self.scaler.fit_transform(
+            self.rfm_data[['recency', 'frequency', 'monetary']]
+        )
+        
+        # K-Means
+        self.kmeans = KMeans(
+            n_clusters=self.n_clusters,
+            init='k-means++',
+            max_iter=300,
+            n_init=10,
+            random_state=42
+        )
+        
+        labels = self.kmeans.fit_predict(self.rfm_scaled)
+        self.rfm_data['cluster'] = labels
+        
+        # Silhouette Score
+        self.sil_score = silhouette_score(self.rfm_scaled, labels)
+        print(f"  Silhouette Score: {self.sil_score:.3f}")
+        
+        # Аналіз кластерів
+        self.analyze_clusters()
+        
+        print("  Модель успішно навчена")
+        
+    def analyze_clusters(self):
+        """Аналіз та інтерпретація кластерів"""
+        print("\n  Аналіз кластерів:")
+        
+        for cluster_id in range(self.n_clusters):
+            cluster_data = self.rfm_data[self.rfm_data['cluster'] == cluster_id]
+            
+            avg_r = cluster_data['recency'].mean()
+            avg_f = cluster_data['frequency'].mean()
+            avg_m = cluster_data['monetary'].mean()
+            size = len(cluster_data)
+            percentage = (size / len(self.rfm_data)) * 100
+            
+            # Інтерпретація
+            name = self.interpret_cluster(avg_r, avg_f, avg_m)
+            
+            self.cluster_descriptions[cluster_id] = {
+                'name': name,
+                'size': size,
+                'percentage': percentage,
+                'avg_recency': avg_r,
+                'avg_frequency': avg_f,
+                'avg_monetary': avg_m
+            }
+            
+            print(f"\n  Кластер {cluster_id}: {name}")
+            print(f"    Розмір: {size} клієнтів ({percentage:.1f}%)")
+            print(f"    R={avg_r:.1f} дн, F={avg_f:.1f}, M={avg_m:.2f} грн")
+    
+    def interpret_cluster(self, recency, frequency, monetary):
+        """Інтерпретація кластера"""
+        avg_r = self.rfm_data['recency'].mean()
+        avg_f = self.rfm_data['frequency'].mean()
+        avg_m = self.rfm_data['monetary'].mean()
+        
+        if recency < avg_r * 0.7 and frequency > avg_f * 1.3 and monetary > avg_m * 1.3:
+            return "VIP Клієнти"
+        elif recency < avg_r * 1.2 and frequency > avg_f and monetary > avg_m:
+            return "Лояльні Клієнти"
+        elif recency > avg_r * 1.5 and frequency > avg_f * 0.7:
+            return "Клієнти в Зоні Ризику"
+        elif frequency < avg_f * 0.7 and monetary < avg_m * 0.7:
+            return "Нові/Потенційні"
+        else:
+            return "Середні Клієнти"
+    
+    def predict(self, customer_rfm):
+        """Визначення кластера для нового клієнта"""
+        rfm_scaled = self.scaler.transform(
+            customer_rfm[['recency', 'frequency', 'monetary']]
+        )
+        cluster = self.kmeans.predict(rfm_scaled)[0]
+        return cluster
+    
+    def get_summary(self):
+        """Отримання підсумкової таблиці"""
+        summary = []
+        for cluster_id, info in self.cluster_descriptions.items():
+            summary.append({
+                'Кластер': cluster_id,
+                'Назва': info['name'],
+                'Кількість': info['size'],
+                'Відсоток': f"{info['percentage']:.1f}%",
+                'Recency': f"{info['avg_recency']:.1f}",
+                'Frequency': f"{info['avg_frequency']:.1f}",
+                'Monetary': f"{info['avg_monetary']:.2f}"
+            })
+        return pd.DataFrame(summary)
+    
+    def plot_elbow_method(self):
+        """Графік методу ліктя"""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+        
+        # Inertia
+        k_range = range(2, len(self.inertias) + 2)
+        ax1.plot(k_range, self.inertias, 'bo-', linewidth=2, markersize=8)
+        ax1.set_xlabel('Кількість кластерів (K)')
+        ax1.set_ylabel('Inertia')
+        ax1.set_title('Метод ліктя - Inertia', fontsize=14, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        
+        # Silhouette Score
+        ax2.plot(k_range, self.silhouette_scores, 'ro-', linewidth=2, markersize=8)
+        optimal_k = np.argmax(self.silhouette_scores) + 2
+        ax2.axvline(x=optimal_k, color='green', linestyle='--', linewidth=2, 
+                   label=f'Оптимальне K={optimal_k}')
+        ax2.set_xlabel('Кількість кластерів (K)')
+        ax2.set_ylabel('Silhouette Score')
+        ax2.set_title('Silhouette Score', fontsize=14, fontweight='bold')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig('/mnt/user-data/outputs/10_elbow_method.png', dpi=300, bbox_inches='tight')
+        print("  ✓ Збережено: 10_elbow_method.png")
+        plt.close()
+    
+    def plot_3d_clusters(self):
+        """3D візуалізація кластерів"""
+        fig = plt.figure(figsize=(15, 12))
+        
+        # 3D scatter plot
+        ax = fig.add_subplot(221, projection='3d')
+        
+        colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c']
+        
+        for cluster_id in range(self.n_clusters):
+            cluster_data = self.rfm_data[self.rfm_data['cluster'] == cluster_id]
+            ax.scatter(cluster_data['recency'], 
+                      cluster_data['frequency'], 
+                      cluster_data['monetary'],
+                      c=colors[cluster_id % len(colors)], 
+                      label=self.cluster_descriptions[cluster_id]['name'],
+                      s=50, alpha=0.6, edgecolors='black')
+        
+        ax.set_xlabel('Recency (днів)')
+        ax.set_ylabel('Frequency')
+        ax.set_zlabel('Monetary (грн)')
+        ax.set_title('3D Візуалізація кластерів', fontsize=14, fontweight='bold')
+        ax.legend()
+        
+        # Recency vs Frequency
+        ax2 = fig.add_subplot(222)
+        for cluster_id in range(self.n_clusters):
+            cluster_data = self.rfm_data[self.rfm_data['cluster'] == cluster_id]
+            ax2.scatter(cluster_data['recency'], cluster_data['frequency'],
+                       c=colors[cluster_id % len(colors)], 
+                       label=self.cluster_descriptions[cluster_id]['name'],
+                       s=50, alpha=0.6, edgecolors='black')
+        ax2.set_xlabel('Recency (днів)')
+        ax2.set_ylabel('Frequency')
+        ax2.set_title('Recency vs Frequency', fontweight='bold')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Frequency vs Monetary
+        ax3 = fig.add_subplot(223)
+        for cluster_id in range(self.n_clusters):
+            cluster_data = self.rfm_data[self.rfm_data['cluster'] == cluster_id]
+            ax3.scatter(cluster_data['frequency'], cluster_data['monetary'],
+                       c=colors[cluster_id % len(colors)], 
+                       label=self.cluster_descriptions[cluster_id]['name'],
+                       s=50, alpha=0.6, edgecolors='black')
+        ax3.set_xlabel('Frequency')
+        ax3.set_ylabel('Monetary (грн)')
+        ax3.set_title('Frequency vs Monetary', fontweight='bold')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Recency vs Monetary
+        ax4 = fig.add_subplot(224)
+        for cluster_id in range(self.n_clusters):
+            cluster_data = self.rfm_data[self.rfm_data['cluster'] == cluster_id]
+            ax4.scatter(cluster_data['recency'], cluster_data['monetary'],
+                       c=colors[cluster_id % len(colors)], 
+                       label=self.cluster_descriptions[cluster_id]['name'],
+                       s=50, alpha=0.6, edgecolors='black')
+        ax4.set_xlabel('Recency (днів)')
+        ax4.set_ylabel('Monetary (грн)')
+        ax4.set_title('Recency vs Monetary', fontweight='bold')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig('/mnt/user-data/outputs/11_3d_clusters.png', dpi=300, bbox_inches='tight')
+        print("  ✓ Збережено: 11_3d_clusters.png")
+        plt.close()
+    
+    def plot_cluster_profiles(self):
+        """Профілі кластерів"""
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        axes = axes.ravel()
+        
+        colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c']
+        
+        for idx, cluster_id in enumerate(range(self.n_clusters)):
+            if idx >= 4:
+                break
+                
+            ax = axes[idx]
+            info = self.cluster_descriptions[cluster_id]
+            
+            # Нормалізовані значення для радар-чарту
+            avg_r_norm = 1 - (info['avg_recency'] / self.rfm_data['recency'].max())
+            avg_f_norm = info['avg_frequency'] / self.rfm_data['frequency'].max()
+            avg_m_norm = info['avg_monetary'] / self.rfm_data['monetary'].max()
+            
+            categories = ['Recency\n(свіжість)', 'Frequency\n(частота)', 'Monetary\n(цінність)']
+            values = [avg_r_norm, avg_f_norm, avg_m_norm]
+            
+            x = np.arange(len(categories))
+            bars = ax.bar(x, values, color=colors[cluster_id % len(colors)], 
+                         alpha=0.7, edgecolor='black')
+            ax.set_xticks(x)
+            ax.set_xticklabels(categories)
+            ax.set_ylim(0, 1)
+            ax.set_title(f'{info["name"]}\n({info["size"]} клієнтів, {info["percentage"]:.1f}%)', 
+                        fontweight='bold')
+            ax.grid(True, alpha=0.3, axis='y')
+            
+            # Додаємо значення на стовпчики
+            for bar, value in zip(bars, values):
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{value:.2f}', ha='center', va='bottom', fontweight='bold')
+        
+        plt.tight_layout()
+        plt.savefig('/mnt/user-data/outputs/12_cluster_profiles.png', dpi=300, bbox_inches='tight')
+        print("  ✓ Збережено: 12_cluster_profiles.png")
+        plt.close()
+    
+    def plot_rfm_distributions(self):
+        """Розподіл RFM метрик"""
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        
+        colors_cluster = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c']
+        
+        # Recency distribution
+        ax = axes[0, 0]
+        for cluster_id in range(self.n_clusters):
+            cluster_data = self.rfm_data[self.rfm_data['cluster'] == cluster_id]
+            ax.hist(cluster_data['recency'], bins=20, alpha=0.5, 
+                   label=self.cluster_descriptions[cluster_id]['name'],
+                   color=colors_cluster[cluster_id % len(colors_cluster)])
+        ax.set_xlabel('Recency (днів)')
+        ax.set_ylabel('Частота')
+        ax.set_title('Розподіл Recency', fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Frequency distribution
+        ax = axes[0, 1]
+        for cluster_id in range(self.n_clusters):
+            cluster_data = self.rfm_data[self.rfm_data['cluster'] == cluster_id]
+            ax.hist(cluster_data['frequency'], bins=20, alpha=0.5,
+                   label=self.cluster_descriptions[cluster_id]['name'],
+                   color=colors_cluster[cluster_id % len(colors_cluster)])
+        ax.set_xlabel('Frequency')
+        ax.set_ylabel('Частота')
+        ax.set_title('Розподіл Frequency', fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Monetary distribution
+        ax = axes[0, 2]
+        for cluster_id in range(self.n_clusters):
+            cluster_data = self.rfm_data[self.rfm_data['cluster'] == cluster_id]
+            ax.hist(cluster_data['monetary'], bins=20, alpha=0.5,
+                   label=self.cluster_descriptions[cluster_id]['name'],
+                   color=colors_cluster[cluster_id % len(colors_cluster)])
+        ax.set_xlabel('Monetary (грн)')
+        ax.set_ylabel('Частота')
+        ax.set_title('Розподіл Monetary', fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Box plots
+        ax = axes[1, 0]
+        data_recency = [self.rfm_data[self.rfm_data['cluster'] == i]['recency'].values 
+                       for i in range(self.n_clusters)]
+        bp = ax.boxplot(data_recency, labels=[self.cluster_descriptions[i]['name'] 
+                                              for i in range(self.n_clusters)],
+                       patch_artist=True)
+        for patch, color in zip(bp['boxes'], colors_cluster):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        ax.set_ylabel('Recency (днів)')
+        ax.set_title('Recency по кластерах', fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        ax = axes[1, 1]
+        data_frequency = [self.rfm_data[self.rfm_data['cluster'] == i]['frequency'].values 
+                         for i in range(self.n_clusters)]
+        bp = ax.boxplot(data_frequency, labels=[self.cluster_descriptions[i]['name'] 
+                                                for i in range(self.n_clusters)],
+                       patch_artist=True)
+        for patch, color in zip(bp['boxes'], colors_cluster):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        ax.set_ylabel('Frequency')
+        ax.set_title('Frequency по кластерах', fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        ax = axes[1, 2]
+        data_monetary = [self.rfm_data[self.rfm_data['cluster'] == i]['monetary'].values 
+                        for i in range(self.n_clusters)]
+        bp = ax.boxplot(data_monetary, labels=[self.cluster_descriptions[i]['name'] 
+                                               for i in range(self.n_clusters)],
+                       patch_artist=True)
+        for patch, color in zip(bp['boxes'], colors_cluster):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        ax.set_ylabel('Monetary (грн)')
+        ax.set_title('Monetary по кластерах', fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        
+        plt.tight_layout()
+        plt.savefig('/mnt/user-data/outputs/13_rfm_distributions.png', dpi=300, bbox_inches='tight')
+        print("  ✓ Збережено: 13_rfm_distributions.png")
+        plt.close()
+    
+    def plot_cluster_comparison(self):
+        """Порівняльний аналіз кластерів"""
+        fig = plt.figure(figsize=(15, 10))
+        gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+        
+        # 1. Розподіл клієнтів по кластерах
+        ax1 = fig.add_subplot(gs[0, 0])
+        sizes = [info['size'] for info in self.cluster_descriptions.values()]
+        labels = [info['name'] for info in self.cluster_descriptions.values()]
+        colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c']
+        
+        wedges, texts, autotexts = ax1.pie(sizes, labels=labels, autopct='%1.1f%%',
+                                           colors=colors[:self.n_clusters], startangle=90)
+        for autotext in autotexts:
+            autotext.set_color('white')
+            autotext.set_fontweight('bold')
+        ax1.set_title('Розподіл клієнтів по сегментах', fontweight='bold')
+        
+        # 2. Середні значення RFM
+        ax2 = fig.add_subplot(gs[0, 1])
+        cluster_names = [info['name'] for info in self.cluster_descriptions.values()]
+        recency_avg = [info['avg_recency'] for info in self.cluster_descriptions.values()]
+        frequency_avg = [info['avg_frequency'] for info in self.cluster_descriptions.values()]
+        monetary_avg = [info['avg_monetary'] for info in self.cluster_descriptions.values()]
+        
+        x = np.arange(len(cluster_names))
+        width = 0.25
+        
+        ax2.bar(x - width, recency_avg, width, label='Recency', color='#e74c3c', alpha=0.7)
+        ax2.bar(x, frequency_avg, width, label='Frequency', color='#3498db', alpha=0.7)
+        ax2.bar(x + width, [m/10 for m in monetary_avg], width, 
+               label='Monetary/10', color='#2ecc71', alpha=0.7)
+        
+        ax2.set_xlabel('Сегмент')
+        ax2.set_ylabel('Значення')
+        ax2.set_title('Середні RFM метрики по сегментах', fontweight='bold')
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(cluster_names, rotation=45, ha='right')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3, axis='y')
+        
+        # 3. Цінність сегментів
+        ax3 = fig.add_subplot(gs[1, :])
+        total_value = [info['size'] * info['avg_monetary'] 
+                      for info in self.cluster_descriptions.values()]
+        
+        bars = ax3.barh(cluster_names, total_value, color=colors[:self.n_clusters], 
+                       alpha=0.7, edgecolor='black')
+        ax3.set_xlabel('Загальна цінність сегменту (грн)')
+        ax3.set_title('Цінність клієнтських сегментів', fontsize=14, fontweight='bold')
+        ax3.grid(True, alpha=0.3, axis='x')
+        
+        # Додаємо відсотки
+        total_sum = sum(total_value)
+        for bar, value in zip(bars, total_value):
+            width = bar.get_width()
+            percentage = (value / total_sum) * 100
+            ax3.text(width, bar.get_y() + bar.get_height()/2.,
+                    f'{value:.0f} грн ({percentage:.1f}%)',
+                    ha='left', va='center', fontweight='bold')
+        
+        plt.savefig('/mnt/user-data/outputs/14_cluster_comparison.png', dpi=300, bbox_inches='tight')
+        print("  ✓ Збережено: 14_cluster_comparison.png")
+        plt.close()
+
+
+def test_customer_segmentation():
+    """Тестування сегментації клієнтів"""
+    print("="*80)
+    print("ТЕСТУВАННЯ МОДУЛЯ 3: СЕГМЕНТАЦІЯ КЛІЄНТІВ (K-MEANS + RFM)")
+    print("="*80)
+    
+    # Генерація тестових даних
+    np.random.seed(42)
+    
+    n_customers = 200
+    n_transactions = 1200
+    
+    start_date = datetime(2023, 1, 1)
+    
+    transactions = []
+    for _ in range(n_transactions):
+        customer_id = np.random.randint(1, n_customers + 1)
+        days_offset = np.random.randint(0, 365)
+        date = start_date + timedelta(days=days_offset)
+        amount = np.random.uniform(50, 500)
+        
+        transactions.append({
+            'customer_id': customer_id,
+            'date': date,
+            'amount': amount
+        })
+    
+    transactions_df = pd.DataFrame(transactions)
+    
+    print(f"\nТестові дані:")
+    print(f"Клієнтів: {transactions_df['customer_id'].nunique()}")
+    print(f"Транзакцій: {len(transactions_df)}")
+    print(f"Середній чек: {transactions_df['amount'].mean():.2f} грн")
+    
+    # Створення моделі
+    segmentation = CustomerSegmentation(n_clusters=4)
+    
+    # Пошук оптимального K
+    rfm_temp = segmentation.calculate_rfm(transactions_df)
+    optimal_k = segmentation.find_optimal_k(rfm_temp, max_k=8)
+    
+    # Навчання з оптимальним K
+    segmentation = CustomerSegmentation(n_clusters=optimal_k)
+    segmentation.fit(transactions_df)
+    
+    # Результати
+    print("\n" + "="*80)
+    print("РЕЗУЛЬТАТИ СЕГМЕНТАЦІЇ")
+    print("="*80)
+    
+    summary = segmentation.get_summary()
+    print("\n" + summary.to_string(index=False))
+    
+    # Тест прогнозу для нового клієнта
+    print("\n" + "="*80)
+    print("ТЕСТ: КЛАСИФІКАЦІЯ НОВОГО КЛІЄНТА")
+    print("="*80)
+    
+    new_customer = pd.DataFrame({
+        'recency': [15],
+        'frequency': [10],
+        'monetary': [2500]
+    })
+    
+    cluster_id = segmentation.predict(new_customer)
+    cluster_name = segmentation.cluster_descriptions[cluster_id]['name']
+    
+    print(f"\nНовий клієнт:")
+    print(f"  Recency: 15 днів")
+    print(f"  Frequency: 10 транзакцій")
+    print(f"  Monetary: 2500 грн")
+    print(f"\nПрогнозований сегмент: {cluster_name} (кластер {cluster_id})")
+    
+    # Створення візуалізацій
+    print("\n" + "="*80)
+    print("ГЕНЕРАЦІЯ ВІЗУАЛІЗАЦІЙ")
+    print("="*80)
+    
+    segmentation.plot_elbow_method()
+    segmentation.plot_3d_clusters()
+    segmentation.plot_cluster_profiles()
+    segmentation.plot_rfm_distributions()
+    segmentation.plot_cluster_comparison()
+    
+    return segmentation
+
+
+if __name__ == "__main__":
+    segmentation = test_customer_segmentation()
+    print("\n" + "="*80)
+    print("ТЕСТ ЗАВЕРШЕНО УСПІШНО")
+    print("="*80)
