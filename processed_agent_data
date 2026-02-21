@@ -1,0 +1,75 @@
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import numpy as np
+
+
+# ── Дані з БД (3 записи з user story) ────────────────────────────────
+road_states = ['smooth', 'small pits', 'large pits']
+x_vals      = [-112, -58, 379]
+y_vals      = [-318, 114,  31]
+z_vals      = [16533, 16546, 16535]
+timestamps  = ['23:54:01', '23:54:02', '23:54:03']
+latitudes   = [50.45045, 50.45040, 50.45043]
+longitudes  = [30.52441, 30.52450, 30.52445]
+colors_pie  = ['#4CAF50', '#FFC107', '#F44336']
+state_colors = {'smooth':'#4CAF50','small pits':'#FFC107','large pits':'#F44336'}
+
+
+fig = plt.figure(figsize=(16, 12), facecolor='#F8F9FA')
+fig.suptitle('Візуалізація даних системи моніторингу дорожнього покриття',
+             fontsize=15, fontweight='bold', color='#1A237E')
+
+
+# 1 ─ Кругова діаграма розподілу станів ──────────────────────────────
+ax1 = fig.add_subplot(2, 3, 1)
+ax1.pie([1,1,1], labels=road_states, colors=colors_pie, autopct='%1.0f%%',
+        startangle=90, wedgeprops=dict(edgecolor='white', linewidth=2))
+ax1.set_title('Розподіл станів дороги')
+
+
+# 2 ─ Гістограма осей X та Y акселерометра ───────────────────────────
+ax2 = fig.add_subplot(2, 3, 2)
+idx, w = np.arange(3), 0.3
+ax2.bar(idx - w, x_vals, w, label='X (мг)', color='#2196F3', alpha=0.85)
+ax2.bar(idx,     y_vals, w, label='Y (мг)', color='#FF9800', alpha=0.85)
+ax2.axhline(0, color='black', linewidth=0.8, linestyle='--')
+ax2.set_xticks(idx); ax2.set_xticklabels(timestamps)
+ax2.set_title('Показники акселерометра (X, Y)'); ax2.legend()
+
+
+# 3 ─ Стовпчик Z (вертикальне прискорення) ───────────────────────────
+ax3 = fig.add_subplot(2, 3, 3)
+ax3.bar(timestamps, z_vals,
+        color=[state_colors[s] for s in road_states], alpha=0.85)
+ax3.set_title('Вертикальне прискорення Z'); ax3.set_ylim(16525, 16555)
+
+
+# 4 ─ Лінійний графік X/Y по часу ────────────────────────────────────
+ax4 = fig.add_subplot(2, 3, 4)
+ax4.plot(timestamps, x_vals, 'o-', color='#2196F3', lw=2, label='X')
+ax4.plot(timestamps, y_vals, 's-', color='#FF9800', lw=2, label='Y')
+ax4.set_title('Динаміка X та Y у часі'); ax4.legend()
+
+
+# 5 ─ GPS-маршрут ─────────────────────────────────────────────────────
+ax5 = fig.add_subplot(2, 3, 5)
+ax5.plot(longitudes, latitudes, 'o-', color='#9C27B0', lw=2, markersize=10)
+for lng, lat, s in zip(longitudes, latitudes, road_states):
+    ax5.scatter(lng, lat, color=state_colors[s], s=120, zorder=5)
+    ax5.annotate(f' {s}', (lng, lat), fontsize=8)
+ax5.set_title('GPS-маршрут (3 точки)')
+
+
+# 6 ─ CRUD-статистика (user story) ───────────────────────────────────
+ax6 = fig.add_subplot(2, 3, 6)
+ops = ['POST\n(create)','GET by id','GET list','PUT\n(update)','DELETE']
+ax6.barh(ops, [3,1,2,1,1],
+         color=['#4CAF50','#2196F3','#03A9F4','#FF9800','#F44336'], alpha=0.85)
+ax6.set_title('CRUD-операції (user story)')
+
+
+plt.tight_layout()
+plt.savefig('road_charts.png', dpi=150, bbox_inches='tight')
+plt.show()
